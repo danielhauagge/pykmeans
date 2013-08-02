@@ -18,7 +18,7 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
         return NULL;
     }
 
-    printf("K=%llu, iters=%d\n", K, iters);
+    fprintf(stderr, "K=%llu, iters=%d\n", K, iters);
 
     if (PyArray_NDIM(pydata) != 2) {
         PyErr_SetString(PyExc_TypeError, "data must be 2 dimensional");
@@ -49,7 +49,7 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
     float * distances = calloc(omp_get_max_threads()*K, sizeof(float));
     assert(distances);
     float * tmp = calloc(omp_get_max_threads()*M, sizeof(float));
-    printf("%d max threads\n", omp_get_max_threads());
+    fprintf(stderr, "%d max threads\n", omp_get_max_threads());
     assert(tmp);
     int * nassign = calloc(K, sizeof(int));
     assert(nassign);
@@ -100,9 +100,9 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
 
     assert(inc_centroids == 1);
     for (i = 0; i < iters; ++i) {
-        printf("Iter %llu\n", i);
+        fprintf(stderr, "Iter %llu\n", i);
 
-        printf("Mapper\n");
+        fprintf(stderr, "Mapper\n");
 
         // compute distance for each input feature to all centroids in parallel
         unsigned long long n;
@@ -127,7 +127,7 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
             *(int*)PyArray_GETPTR1(pyassign, n) = cblas_isamin(K, local_distances, 1);
         }
 
-        printf("Reducer\n");
+        fprintf(stderr, "Reducer\n");
 
         PyArrayObject * tmp_array = pycentroids_bak;
         pycentroids_bak = pycentroids;
@@ -165,10 +165,10 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
             convergence[k] = cblas_snrm2(M, PyArray_GETPTR2(pycentroids_bak, k, 0), inc_centroids);
         }
         float delta = cblas_sasum(K, convergence, 1);
-        printf("Delta: %f\n", delta);
+        fprintf(stderr, "Delta: %f\n", delta);
         if (delta < tau) {
-            printf("Threshold %f reached\n", tau);
-            printf("Terminating\n");
+            fprintf(stderr, "Threshold %f reached\n", tau);
+            fprintf(stderr, "Terminating\n");
             break;
         }
     }
