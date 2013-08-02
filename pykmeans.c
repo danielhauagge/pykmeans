@@ -6,17 +6,18 @@
 
 #include <omp.h>
 
-static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
+static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args, PyObject * kwargs)
 {
     PyArrayObject * pydata;
+    PyArrayObject * pycentroids = NULL;
     unsigned long long K;
     int iters;
     float tau;
 
-    if (!PyArg_ParseTuple(args, "O!Lif", &PyArray_Type, &pydata, &K, &iters, &tau)) {
-        PyErr_SetString(PyExc_TypeError, "kmeans requires a NxM array of features, an integer number of clusters, an integer number of iterations, and a floating point threshold");
+    static char * kwlist[] = {"data", "k", "iters", "epsilon", "centroids", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O!Lif|O!", kwlist, &PyArray_Type, &pydata, &K, &iters, &tau, &PyArray_Type, &pycentroids)) 
         return NULL;
-    }
 
     fprintf(stderr, "K=%llu, iters=%d\n", K, iters);
 
@@ -44,6 +45,31 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
         return NULL;
     }
 
+    if (pycentroids) {
+        if (PyArray_NDIM(pycentroids) != 2) {
+            PyErr_SetString(PyExc_TypeError, "centroids must be 2 dimensional");
+            return NULL;
+        }
+
+        if (PyArray_DESCR(pycentroids)->type_num != NPY_FLOAT) {
+            PyErr_SetString(PyExc_TypeError, "centroids must be of type float32");
+            return NULL;
+        }
+
+        const npy_intp * centroid_dims = PyArray_DIMS(pycentroids);
+        if (centroid_dims[0] != K) {
+            PyErr_SetString(PyExc_TypeError, "centroids must contain K rows");
+            return NULL;
+        }
+
+        if (centroid_dims[1] != M) {
+            PyErr_SetString(PyExc_TypeError, "centroids must have the same feature dimensionality as data");
+            return NULL;
+        }
+    }
+
+    int needs_init = !pycentroids;
+
     // n x K
     // compute distances for each feature, put all K contiguously
     float * distances = calloc(omp_get_max_threads()*K, sizeof(float));
@@ -64,7 +90,8 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
     npy_intp pycentroid_dims[2];
     pycentroid_dims[0] = K;
     pycentroid_dims[1] = M;
-    PyArrayObject * pycentroids = (PyArrayObject*)PyArray_SimpleNew((npy_intp)2, pycentroid_dims, NPY_FLOAT);
+    if (needs_init)
+        pycentroids = (PyArrayObject*)PyArray_SimpleNew((npy_intp)2, pycentroid_dims, NPY_FLOAT);
     assert(pycentroids);
     PyArrayObject * pycentroids_bak = (PyArrayObject*)PyArray_SimpleNew((npy_intp)2, pycentroid_dims, NPY_FLOAT);
     npy_intp * centroid_strides = PyArray_STRIDES(pycentroids);
@@ -74,29 +101,33 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
     int inc_data = strides[1]/sizeof(float);
     int inc_centroids = centroid_strides[1]/sizeof(float);
 
-    // random init
-    int * R = calloc(K, sizeof(int));
-    assert(R);
     unsigned long long i;
-    for (i = 0; i < K; ++i) {
-        R[i] = i;
+    if (needs_init) {
+        // random init
+        int * R = calloc(K, sizeof(int));
+        assert(R);
+        for (i = 0; i < K; ++i) {
+            R[i] = i;
+        }
+        for (i = K+1; i < N; ++i) {
+            unsigned long long j = rand()/(RAND_MAX + 1.0f)*i;
+            if (j < K)
+                R[j] = i;
+        }
+        #pragma omp parallel for
+        for (i = 0; i < K; ++i) {
+            cblas_scopy(
+                M, 
+                (float*)PyArray_GETPTR2(pydata, R[i], 0), 
+                inc_data,
+                (float*)PyArray_GETPTR2(pycentroids, i, 0), 
+                inc_centroids
+            );
+        }
+        free(R);
     }
-    for (i = K+1; i < N; ++i) {
-        unsigned long long j = rand()/(RAND_MAX + 1.0f)*i;
-        if (j < K)
-            R[j] = i;
-    }
-    #pragma omp parallel for
-    for (i = 0; i < K; ++i) {
-        cblas_scopy(
-            M, 
-            (float*)PyArray_GETPTR2(pydata, R[i], 0), 
-            inc_data,
-            (float*)PyArray_GETPTR2(pycentroids, i, 0), 
-            inc_centroids
-        );
-    }
-    free(R);
+
+    float delta = 0;
 
     assert(inc_centroids == 1);
     for (i = 0; i < iters; ++i) {
@@ -164,7 +195,7 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
 
             convergence[k] = cblas_snrm2(M, PyArray_GETPTR2(pycentroids_bak, k, 0), inc_centroids);
         }
-        float delta = cblas_sasum(K, convergence, 1);
+        delta = cblas_sasum(K, convergence, 1);
         fprintf(stderr, "Delta: %f\n", delta);
         if (delta < tau) {
             fprintf(stderr, "Threshold %f reached\n", tau);
@@ -179,7 +210,7 @@ static PyObject * pykmeans_kmeans(PyObject * self, PyObject * args)
 
     Py_DECREF(pycentroids_bak);
 
-    return Py_BuildValue("OO", pycentroids, pyassign);
+    return Py_BuildValue("OOd", pycentroids, pyassign, delta);
 }
 
 #if PY_MAJOR_VERSION >= 3
@@ -198,7 +229,7 @@ static struct PyModuleDef moduledef = {
 
 #if PY_MAJOR_VERSION < 3
 static PyMethodDef pykmeans_methods[] = {
-    {"kmeans", pykmeans_kmeans, METH_VARARGS, "kmeans"},
+    {"kmeans", (PyCFunction)pykmeans_kmeans, METH_VARARGS|METH_KEYWORDS, "kmeans"},
     {NULL}
 };
 #endif
